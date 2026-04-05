@@ -2,7 +2,7 @@
 -- Creates all tables with Row Level Security
 
 -- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
 
 -- Create upload status enum
 CREATE TYPE upload_status AS ENUM ('pending', 'uploading', 'completed', 'failed');
@@ -16,7 +16,7 @@ CREATE TABLE admins (
 
 -- Frame.io folders table (synced from Frame.io API)
 CREATE TABLE frameio_folders (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   frameio_asset_id TEXT NOT NULL UNIQUE,
   frameio_project_id TEXT NOT NULL,
   project_name TEXT NOT NULL,
@@ -31,7 +31,7 @@ CREATE TABLE frameio_folders (
 
 -- Upload events table (logs all upload attempts)
 CREATE TABLE upload_events (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   frameio_asset_id TEXT,
   folder_id UUID NOT NULL REFERENCES frameio_folders(id) ON DELETE CASCADE,
   uploader_name TEXT,
@@ -47,7 +47,7 @@ CREATE TABLE upload_events (
 
 -- Settings table (stores Frame.io token and other config)
 CREATE TABLE settings (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   key TEXT NOT NULL UNIQUE,
   value TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
