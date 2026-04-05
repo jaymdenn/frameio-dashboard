@@ -7,7 +7,7 @@ A web application that allows clients and team members to upload video files dir
 - **Upload Portal**: https://frameio-dashboard.vercel.app
 - **Admin Panel**: https://frameio-dashboard.vercel.app/admin
 - **GitHub**: https://github.com/jaymdenn/frameio-dashboard
-- **Supabase**: https://supabase.com/dashboard/project/vwsvruuoblhsepuubjel
+- **Supabase**: https://supabase.com/dashboard/project/bgaavbgpdsmzjwqjwefh
 
 ## Features
 
