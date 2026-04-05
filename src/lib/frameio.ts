@@ -288,19 +288,65 @@ class FrameioClient {
     }
 
     // Try /projects/shared endpoint - this gets all projects user has access to
+    try {
+      const sharedProjects = await this.requestV2<FrameioProject[]>("/projects/shared");
+      if (Array.isArray(sharedProjects) && sharedProjects.length > 0) {
+        debugInfo.push(`v2_shared=${sharedProjects.length}`);
+        allProjects.push(...sharedProjects);
+      } else {
+        debugInfo.push(`v2_shared=0`);
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      debugInfo.push(`v2_shared_err`);
+      errors.push(`shared: ${errMsg.slice(0, 60)}`);
+    }
+
+    // Try /me with include parameter to get projects directly
     if (allProjects.length === 0) {
       try {
-        const sharedProjects = await this.requestV2<FrameioProject[]>("/projects/shared");
-        if (Array.isArray(sharedProjects) && sharedProjects.length > 0) {
-          debugInfo.push(`v2_shared_projects=${sharedProjects.length}`);
-          allProjects.push(...sharedProjects);
+        const meWithProjects = await this.requestV2<{
+          projects?: FrameioProject[];
+          shared_projects?: FrameioProject[];
+          owned_projects?: FrameioProject[];
+        }>("/me?include=projects,shared_projects,owned_projects");
+
+        if (meWithProjects.projects && Array.isArray(meWithProjects.projects)) {
+          debugInfo.push(`me_proj=${meWithProjects.projects.length}`);
+          allProjects.push(...meWithProjects.projects);
+        }
+        if (meWithProjects.shared_projects && Array.isArray(meWithProjects.shared_projects)) {
+          debugInfo.push(`me_shared=${meWithProjects.shared_projects.length}`);
+          allProjects.push(...meWithProjects.shared_projects);
+        }
+        if (meWithProjects.owned_projects && Array.isArray(meWithProjects.owned_projects)) {
+          debugInfo.push(`me_owned=${meWithProjects.owned_projects.length}`);
+          allProjects.push(...meWithProjects.owned_projects);
         }
       } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        if (errMsg.includes("403") || errMsg.includes("scope")) {
-          errors.push(`shared_projects: ${errMsg}`);
+        debugInfo.push(`me_include_err`);
+      }
+    }
+
+    // Try user memberships endpoint
+    if (allProjects.length === 0 && me.id) {
+      try {
+        const memberships = await this.requestV2<Array<{
+          project?: FrameioProject;
+          resource?: FrameioProject;
+          target?: FrameioProject;
+        }>>(`/users/${me.id}/memberships`);
+
+        if (Array.isArray(memberships) && memberships.length > 0) {
+          debugInfo.push(`memberships=${memberships.length}`);
+          for (const m of memberships) {
+            if (m.project) allProjects.push(m.project);
+            else if (m.resource) allProjects.push(m.resource);
+            else if (m.target) allProjects.push(m.target);
+          }
         }
-        debugInfo.push(`v2_shared_projects_error`);
+      } catch (e) {
+        debugInfo.push(`memberships_err`);
       }
     }
 
