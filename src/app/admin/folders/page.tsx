@@ -201,12 +201,10 @@ function AdminFoldersContent() {
               )}
             </div>
             <div className="flex gap-2">
-              {needsAuth && (
-                <Button onClick={handleConnectFrameio} variant="outline">
-                  <Link2 className="h-4 w-4 mr-2" />
-                  Connect Frame.io
-                </Button>
-              )}
+              <Button onClick={handleConnectFrameio} variant="outline">
+                <Link2 className="h-4 w-4 mr-2" />
+                {needsAuth ? "Connect Frame.io" : "Reconnect"}
+              </Button>
               <Button onClick={handleSync} disabled={syncing}>
                 <RefreshCw
                   className={cn("h-4 w-4 mr-2", syncing && "animate-spin")}
