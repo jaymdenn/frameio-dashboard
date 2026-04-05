@@ -68,19 +68,51 @@ class FrameioClient {
    * Get all projects for the authenticated account
    */
   async getProjects(): Promise<FrameioProject[]> {
-    // First get the current user's account info
-    const me = await this.request<{ id: string; account_id: string }>("/me");
-
-    // Get accounts the user belongs to
-    const accounts = await this.request<{ id: string; name: string }[]>(`/accounts`);
-
     const allProjects: FrameioProject[] = [];
+    const errors: string[] = [];
 
-    // Try to get projects from each account
-    for (const account of accounts) {
+    // Method 1: Get user info and their default account
+    try {
+      const me = await this.request<{
+        id: string;
+        account_id: string;
+        _type: string;
+      }>("/me");
+
+      console.log("Frame.io /me response:", JSON.stringify(me));
+
+      if (me.account_id) {
+        // Try to get teams from the user's account
+        try {
+          const teams = await this.request<{ id: string; name: string }[]>(
+            `/accounts/${me.account_id}/teams`
+          );
+          console.log("Teams found:", teams.length);
+
+          for (const team of teams) {
+            try {
+              const projects = await this.request<FrameioProject[]>(
+                `/teams/${team.id}/projects`
+              );
+              console.log(`Projects in team ${team.name}:`, projects.length);
+              allProjects.push(...projects);
+            } catch (e) {
+              errors.push(`Team ${team.id}: ${e}`);
+            }
+          }
+        } catch (e) {
+          errors.push(`Account teams: ${e}`);
+        }
+      }
+    } catch (e) {
+      errors.push(`/me endpoint: ${e}`);
+    }
+
+    // Method 2: Try direct /teams endpoint (older API)
+    if (allProjects.length === 0) {
       try {
-        // Get teams for this account
-        const teams = await this.request<{ id: string }[]>(`/accounts/${account.id}/teams`);
+        const teams = await this.request<{ id: string; name: string }[]>("/teams");
+        console.log("Direct /teams found:", teams.length);
 
         for (const team of teams) {
           try {
@@ -89,31 +121,30 @@ class FrameioClient {
             );
             allProjects.push(...projects);
           } catch (e) {
-            console.log(`Could not fetch projects for team ${team.id}:`, e);
+            errors.push(`Direct team ${team.id}: ${e}`);
           }
         }
       } catch (e) {
-        console.log(`Could not fetch teams for account ${account.id}:`, e);
+        errors.push(`Direct /teams: ${e}`);
       }
     }
 
-    // Fallback: try legacy /teams endpoint if no projects found
+    // Method 3: Try /projects endpoint directly (some API versions support this)
     if (allProjects.length === 0) {
       try {
-        const teams = await this.request<{ id: string }[]>("/teams");
-        for (const team of teams) {
-          const projects = await this.request<FrameioProject[]>(
-            `/teams/${team.id}/projects`
-          );
-          allProjects.push(...projects);
-        }
+        const projects = await this.request<FrameioProject[]>("/projects");
+        console.log("Direct /projects found:", projects.length);
+        allProjects.push(...projects);
       } catch (e) {
-        console.log("Legacy teams endpoint also failed:", e);
+        errors.push(`Direct /projects: ${e}`);
       }
     }
 
     if (allProjects.length === 0) {
-      throw new Error("No projects found. Please ensure your Frame.io API token has access to at least one project.");
+      console.error("All Frame.io API methods failed:", errors);
+      throw new Error(
+        `No projects found. API errors: ${errors.join("; ")}`
+      );
     }
 
     return allProjects;
