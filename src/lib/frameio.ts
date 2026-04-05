@@ -91,47 +91,77 @@ class FrameioClient {
       throw new Error(`Failed to authenticate with Frame.io: ${e}`);
     }
 
-    // Step 2: Get teams the user is a member of
-    let teams: { id: string; name: string }[] = [];
+    // Step 2: Try to get workspaces (Frame.io Pro uses workspaces, not teams)
+    let workspaces: { id: string; name: string }[] = [];
 
-    // Try getting user's teams directly
+    // Try getting workspaces from account
     try {
-      const userTeams = await this.request<{ id: string; name: string }[]>(
-        `/accounts/${me.account_id}/teams`
+      const accountWorkspaces = await this.request<{ id: string; name: string }[]>(
+        `/accounts/${me.account_id}/workspaces`
       );
-      if (Array.isArray(userTeams)) {
-        teams = userTeams;
-        debugInfo.push(`account_teams=${teams.length}`);
+      if (Array.isArray(accountWorkspaces)) {
+        workspaces = accountWorkspaces;
+        debugInfo.push(`workspaces=${workspaces.length}`);
       }
     } catch (e) {
-      debugInfo.push(`account_teams_error`);
+      debugInfo.push(`workspaces_error`);
     }
 
-    // Fallback: try /teams endpoint
-    if (teams.length === 0) {
+    // Step 3: Get projects from each workspace
+    for (const workspace of workspaces) {
       try {
-        const directTeams = await this.request<{ id: string; name: string }[]>("/teams");
-        if (Array.isArray(directTeams)) {
-          teams = directTeams;
-          debugInfo.push(`direct_teams=${teams.length}`);
+        const workspaceProjects = await this.request<FrameioProject[]>(
+          `/workspaces/${workspace.id}/projects`
+        );
+        if (Array.isArray(workspaceProjects) && workspaceProjects.length > 0) {
+          debugInfo.push(`workspace_${workspace.name}_projects=${workspaceProjects.length}`);
+          allProjects.push(...workspaceProjects);
         }
       } catch (e) {
-        debugInfo.push(`direct_teams_error`);
+        errors.push(`Workspace ${workspace.id}: ${e}`);
       }
     }
 
-    // Step 3: Get projects from each team
-    for (const team of teams) {
+    // Step 3b: Also try teams (for accounts that use team structure)
+    if (allProjects.length === 0) {
+      let teams: { id: string; name: string }[] = [];
+
       try {
-        const teamProjects = await this.request<FrameioProject[]>(
-          `/teams/${team.id}/projects`
+        const userTeams = await this.request<{ id: string; name: string }[]>(
+          `/accounts/${me.account_id}/teams`
         );
-        if (Array.isArray(teamProjects) && teamProjects.length > 0) {
-          debugInfo.push(`team_${team.id}_projects=${teamProjects.length}`);
-          allProjects.push(...teamProjects);
+        if (Array.isArray(userTeams)) {
+          teams = userTeams;
+          debugInfo.push(`account_teams=${teams.length}`);
         }
       } catch (e) {
-        errors.push(`Team ${team.id}: ${e}`);
+        debugInfo.push(`account_teams_error`);
+      }
+
+      if (teams.length === 0) {
+        try {
+          const directTeams = await this.request<{ id: string; name: string }[]>("/teams");
+          if (Array.isArray(directTeams)) {
+            teams = directTeams;
+            debugInfo.push(`direct_teams=${teams.length}`);
+          }
+        } catch (e) {
+          debugInfo.push(`direct_teams_error`);
+        }
+      }
+
+      for (const team of teams) {
+        try {
+          const teamProjects = await this.request<FrameioProject[]>(
+            `/teams/${team.id}/projects`
+          );
+          if (Array.isArray(teamProjects) && teamProjects.length > 0) {
+            debugInfo.push(`team_${team.id}_projects=${teamProjects.length}`);
+            allProjects.push(...teamProjects);
+          }
+        } catch (e) {
+          errors.push(`Team ${team.id}: ${e}`);
+        }
       }
     }
 
