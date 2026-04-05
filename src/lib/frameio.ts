@@ -71,83 +71,112 @@ class FrameioClient {
     const allProjects: FrameioProject[] = [];
     const errors: string[] = [];
 
-    // Method 1: Get user info and their default account
+    // Step 1: Get current user info
+    let me: { id: string; account_id?: string; accounts?: { id: string }[] };
     try {
-      const me = await this.request<{
+      me = await this.request<{
         id: string;
-        account_id: string;
-        _type: string;
+        account_id?: string;
+        accounts?: { id: string }[];
       }>("/me");
-
       console.log("Frame.io /me response:", JSON.stringify(me));
-
-      if (me.account_id) {
-        // Try to get teams from the user's account
-        try {
-          const teams = await this.request<{ id: string; name: string }[]>(
-            `/accounts/${me.account_id}/teams`
-          );
-          console.log("Teams found:", teams.length);
-
-          for (const team of teams) {
-            try {
-              const projects = await this.request<FrameioProject[]>(
-                `/teams/${team.id}/projects`
-              );
-              console.log(`Projects in team ${team.name}:`, projects.length);
-              allProjects.push(...projects);
-            } catch (e) {
-              errors.push(`Team ${team.id}: ${e}`);
-            }
-          }
-        } catch (e) {
-          errors.push(`Account teams: ${e}`);
-        }
-      }
     } catch (e) {
-      errors.push(`/me endpoint: ${e}`);
+      throw new Error(`Failed to authenticate with Frame.io: ${e}`);
     }
 
-    // Method 2: Try direct /teams endpoint (older API)
-    if (allProjects.length === 0) {
+    // Step 2: Get account ID - try multiple sources
+    let accountIds: string[] = [];
+
+    if (me.account_id) {
+      accountIds.push(me.account_id);
+    }
+
+    if (me.accounts && Array.isArray(me.accounts)) {
+      accountIds.push(...me.accounts.map(a => a.id));
+    }
+
+    // Try to fetch accounts list
+    try {
+      const accountsList = await this.request<{ id: string }[]>("/accounts");
+      if (Array.isArray(accountsList)) {
+        accountIds.push(...accountsList.map(a => a.id));
+      }
+    } catch (e) {
+      console.log("Could not fetch /accounts:", e);
+    }
+
+    // Dedupe account IDs
+    accountIds = [...new Set(accountIds)];
+    console.log("Account IDs to check:", accountIds);
+
+    // Step 3: For each account, try to get projects
+    for (const accountId of accountIds) {
+      // Method A: Get projects directly from account
       try {
-        const teams = await this.request<{ id: string; name: string }[]>("/teams");
-        console.log("Direct /teams found:", teams.length);
+        const projects = await this.request<FrameioProject[]>(
+          `/accounts/${accountId}/projects`
+        );
+        if (Array.isArray(projects) && projects.length > 0) {
+          console.log(`Found ${projects.length} projects in account ${accountId}`);
+          allProjects.push(...projects);
+        }
+      } catch (e) {
+        errors.push(`Account ${accountId} projects: ${e}`);
+      }
+
+      // Method B: Get teams then projects from each team
+      try {
+        const teams = await this.request<{ id: string; name: string }[]>(
+          `/accounts/${accountId}/teams`
+        );
+        console.log(`Found ${teams.length} teams in account ${accountId}`);
 
         for (const team of teams) {
           try {
             const projects = await this.request<FrameioProject[]>(
               `/teams/${team.id}/projects`
             );
-            allProjects.push(...projects);
+            if (Array.isArray(projects) && projects.length > 0) {
+              console.log(`Found ${projects.length} projects in team ${team.name}`);
+              allProjects.push(...projects);
+            }
           } catch (e) {
-            errors.push(`Direct team ${team.id}: ${e}`);
+            errors.push(`Team ${team.id}: ${e}`);
           }
         }
       } catch (e) {
-        errors.push(`Direct /teams: ${e}`);
+        errors.push(`Account ${accountId} teams: ${e}`);
       }
     }
 
-    // Method 3: Try /projects endpoint directly (some API versions support this)
+    // Method C: Try user's direct projects membership
     if (allProjects.length === 0) {
       try {
-        const projects = await this.request<FrameioProject[]>("/projects");
-        console.log("Direct /projects found:", projects.length);
-        allProjects.push(...projects);
+        const userProjects = await this.request<FrameioProject[]>(
+          `/users/${me.id}/projects`
+        );
+        if (Array.isArray(userProjects) && userProjects.length > 0) {
+          console.log(`Found ${userProjects.length} projects for user`);
+          allProjects.push(...userProjects);
+        }
       } catch (e) {
-        errors.push(`Direct /projects: ${e}`);
+        errors.push(`User projects: ${e}`);
       }
     }
 
-    if (allProjects.length === 0) {
+    // Dedupe projects by ID
+    const uniqueProjects = Array.from(
+      new Map(allProjects.map((p) => [p.id, p])).values()
+    );
+
+    if (uniqueProjects.length === 0) {
       console.error("All Frame.io API methods failed:", errors);
       throw new Error(
-        `No projects found. API errors: ${errors.join("; ")}`
+        `No projects found. Debug info: accountIds=[${accountIds.join(",")}], errors: ${errors.slice(0, 3).join("; ")}`
       );
     }
 
-    return allProjects;
+    return uniqueProjects;
   }
 
   /**
