@@ -3,15 +3,16 @@ import { cookies } from "next/headers";
 import crypto from "crypto";
 
 /**
- * Initiates OAuth flow with Adobe IMS for Frame.io V4 API
- * Redirects user to Adobe login
+ * Initiates OAuth flow with Frame.io Developer Portal
+ * Uses Frame.io's own OAuth endpoints (not Adobe IMS)
+ * @see https://developer.frame.io/docs/oauth-2-applications/oauth-2-code-authorization-flow
  */
 export async function GET() {
   const clientId = process.env.FRAMEIO_OAUTH_CLIENT_ID;
 
   if (!clientId) {
     return NextResponse.json(
-      { error: "OAuth not configured" },
+      { error: "OAuth not configured. Set FRAMEIO_OAUTH_CLIENT_ID in environment variables." },
       { status: 500 }
     );
   }
@@ -28,19 +29,17 @@ export async function GET() {
     maxAge: 600, // 10 minutes
   });
 
-  // Adobe IMS OAuth authorize endpoint
-  // Required scopes for Frame.io V4
-  const scopes = [
-    "openid",
-    "offline_access",
-    "email",
-    "profile",
-    "additional_info.roles",
-  ].join(" ");
+  // Frame.io OAuth scopes - space delimited
+  // offline = required for refresh_token
+  // account.read = read account info
+  // asset.read = read assets (folders, files)
+  // asset.create = create assets (upload files)
+  const scopes = "offline account.read asset.read asset.create";
 
   const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL || "https://frameio-dashboard.vercel.app"}/api/auth/callback`;
 
-  const authUrl = new URL("https://ims-na1.adobelogin.com/ims/authorize/v2");
+  // Frame.io's own OAuth authorize endpoint
+  const authUrl = new URL("https://applications.frame.io/oauth2/auth");
   authUrl.searchParams.set("client_id", clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("response_type", "code");

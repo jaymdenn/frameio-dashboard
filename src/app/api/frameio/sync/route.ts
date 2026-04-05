@@ -56,17 +56,21 @@ export async function POST() {
 
           if (refreshSetting?.value) {
             try {
+              const clientId = process.env.FRAMEIO_OAUTH_CLIENT_ID || "";
+              const clientSecret = process.env.FRAMEIO_OAUTH_CLIENT_SECRET || "";
+              const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
+              // Use Frame.io's token endpoint for refresh
               const refreshResponse = await fetch(
-                "https://ims-na1.adobelogin.com/ims/token/v3",
+                "https://applications.frame.io/oauth2/token",
                 {
                   method: "POST",
                   headers: {
                     "Content-Type": "application/x-www-form-urlencoded",
+                    "Authorization": `Basic ${basicAuth}`,
                   },
                   body: new URLSearchParams({
                     grant_type: "refresh_token",
-                    client_id: process.env.FRAMEIO_OAUTH_CLIENT_ID || "",
-                    client_secret: process.env.FRAMEIO_OAUTH_CLIENT_SECRET || "",
                     refresh_token: refreshSetting.value,
                   }),
                 }
