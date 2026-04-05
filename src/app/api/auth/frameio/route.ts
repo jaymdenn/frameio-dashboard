@@ -32,9 +32,11 @@ export async function GET() {
   // Frame.io OAuth scopes - space delimited
   // offline = required for refresh_token
   // account.read = read account info
+  // team.read = read teams (required for listing teams/workspaces)
+  // project.read = read projects (required for listing projects)
   // asset.read = read assets (folders, files)
   // asset.create = create assets (upload files)
-  const scopes = "offline account.read asset.read asset.create";
+  const scopes = "offline account.read team.read project.read asset.read asset.create";
 
   const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL || "https://frameio-dashboard.vercel.app"}/api/auth/callback`;
 
