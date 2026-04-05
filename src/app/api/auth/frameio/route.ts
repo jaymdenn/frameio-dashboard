@@ -48,5 +48,8 @@ export async function GET() {
   authUrl.searchParams.set("scope", scopes);
   authUrl.searchParams.set("state", state);
 
+  console.log("Frame.io OAuth URL:", authUrl.toString());
+  console.log("Client ID being used:", clientId);
+
   return NextResponse.redirect(authUrl.toString());
 }
