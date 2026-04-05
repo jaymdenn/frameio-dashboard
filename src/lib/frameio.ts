@@ -104,52 +104,45 @@ class FrameioClient {
       throw new Error(`Failed to authenticate with Frame.io: ${e}`);
     }
 
-    // Step 2: Try V4 API first (for V4 accounts)
-    // V4 endpoint: /v4/accounts/{account_id}/workspaces then /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
+    // Step 2: Get all accounts the user has access to and find projects
+    // The /me endpoint may return accounts array with projects
+    let accounts: Array<{ id: string; name?: string }> = [];
+
     if (me.account_id) {
+      accounts.push({ id: me.account_id });
+    }
+    if (me.accounts && Array.isArray(me.accounts)) {
+      accounts.push(...me.accounts);
+    }
+
+    // Try to get accounts list
+    try {
+      const accountsList = await this.request<Array<{ id: string; name: string }>>("/accounts");
+      if (Array.isArray(accountsList)) {
+        accounts.push(...accountsList);
+        debugInfo.push(`accounts_list=${accountsList.length}`);
+      }
+    } catch (e) {
+      debugInfo.push(`accounts_list_error`);
+    }
+
+    // Dedupe accounts
+    accounts = Array.from(new Map(accounts.map(a => [a.id, a])).values());
+    debugInfo.push(`total_accounts=${accounts.length}`);
+
+    // For each account, try to get projects directly
+    for (const account of accounts) {
+      // Try getting projects directly from account (some API versions support this)
       try {
-        // Try V4 workspaces endpoint
-        const v4Workspaces = await this.request<Array<{ id: string; name: string }>>(
-          `/accounts/${me.account_id}/workspaces`,
-          {},
-          true // use V4
+        const accountProjects = await this.request<FrameioProject[]>(
+          `/accounts/${account.id}/projects`
         );
-
-        if (Array.isArray(v4Workspaces) && v4Workspaces.length > 0) {
-          debugInfo.push(`v4_workspaces=${v4Workspaces.length}`);
-          this.useV4 = true;
-
-          for (const workspace of v4Workspaces) {
-            try {
-              // V4 projects endpoint
-              const v4Projects = await this.request<Array<{
-                id: string;
-                name: string;
-                root_folder_id?: string;
-              }>>(
-                `/accounts/${me.account_id}/workspaces/${workspace.id}/projects`,
-                {},
-                true // use V4
-              );
-
-              if (Array.isArray(v4Projects)) {
-                debugInfo.push(`v4_ws_${workspace.name}_projects=${v4Projects.length}`);
-                // Map V4 response to our project format
-                for (const proj of v4Projects) {
-                  allProjects.push({
-                    id: proj.id,
-                    name: proj.name,
-                    root_asset_id: proj.root_folder_id || proj.id,
-                  });
-                }
-              }
-            } catch (e) {
-              debugInfo.push(`v4_ws_${workspace.id}_error`);
-            }
-          }
+        if (Array.isArray(accountProjects) && accountProjects.length > 0) {
+          debugInfo.push(`account_${account.id?.slice(0,8)}_projects=${accountProjects.length}`);
+          allProjects.push(...accountProjects);
         }
       } catch (e) {
-        debugInfo.push(`v4_workspaces_error`);
+        // This is expected to fail, continue to other methods
       }
     }
 
@@ -224,12 +217,35 @@ class FrameioClient {
       }
     }
 
-    // Step 5: Try user memberships
+    // Step 5: Try user's projects directly
+    if (allProjects.length === 0 && me.id) {
+      // Try /me endpoint with include parameter
+      try {
+        const meWithProjects = await this.request<{
+          projects?: FrameioProject[];
+          shared_projects?: FrameioProject[];
+        }>("/me?include=projects,shared_projects");
+
+        if (meWithProjects.projects && Array.isArray(meWithProjects.projects)) {
+          allProjects.push(...meWithProjects.projects);
+          debugInfo.push(`me_projects=${meWithProjects.projects.length}`);
+        }
+        if (meWithProjects.shared_projects && Array.isArray(meWithProjects.shared_projects)) {
+          allProjects.push(...meWithProjects.shared_projects);
+          debugInfo.push(`me_shared=${meWithProjects.shared_projects.length}`);
+        }
+      } catch (e) {
+        debugInfo.push(`me_include_error`);
+      }
+    }
+
+    // Step 5b: Try user memberships
     if (allProjects.length === 0 && me.id) {
       try {
         const memberships = await this.request<
           Array<{
-            project: FrameioProject;
+            project?: FrameioProject;
+            resource?: FrameioProject;
           }>
         >(`/users/${me.id}/memberships`);
 
@@ -237,12 +253,31 @@ class FrameioClient {
           for (const membership of memberships) {
             if (membership.project) {
               allProjects.push(membership.project);
+            } else if (membership.resource) {
+              allProjects.push(membership.resource);
             }
           }
           debugInfo.push(`v2_memberships=${memberships.length}`);
         }
       } catch (e) {
         debugInfo.push(`v2_memberships_error`);
+      }
+    }
+
+    // Step 5c: Try pending_collaborator_list (another way to find projects)
+    if (allProjects.length === 0) {
+      try {
+        const collabs = await this.request<Array<{ project: FrameioProject }>>(
+          "/me/pending_collaborator_list"
+        );
+        if (Array.isArray(collabs)) {
+          for (const c of collabs) {
+            if (c.project) allProjects.push(c.project);
+          }
+          debugInfo.push(`collabs=${collabs.length}`);
+        }
+      } catch (e) {
+        // Expected to fail
       }
     }
 
