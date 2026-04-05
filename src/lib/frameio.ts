@@ -294,6 +294,19 @@ class FrameioClient {
       }
     }
 
+    // Try /projects/shared endpoint - this gets all projects user has access to
+    if (allProjects.length === 0) {
+      try {
+        const sharedProjects = await this.requestV2<FrameioProject[]>("/projects/shared");
+        if (Array.isArray(sharedProjects) && sharedProjects.length > 0) {
+          debugInfo.push(`v2_shared_projects=${sharedProjects.length}`);
+          allProjects.push(...sharedProjects);
+        }
+      } catch (e) {
+        debugInfo.push(`v2_shared_projects_error`);
+      }
+    }
+
     // Try V2 teams (older account structure)
     if (allProjects.length === 0) {
       let teams: { id: string; name: string }[] = [];
@@ -334,6 +347,19 @@ class FrameioClient {
         } catch (e) {
           errors.push(`V2 Team ${team.id}: ${e}`);
         }
+      }
+    }
+
+    // Try /projects endpoint directly (some accounts support this)
+    if (allProjects.length === 0) {
+      try {
+        const directProjects = await this.requestV2<FrameioProject[]>("/projects");
+        if (Array.isArray(directProjects) && directProjects.length > 0) {
+          debugInfo.push(`v2_direct_projects=${directProjects.length}`);
+          allProjects.push(...directProjects);
+        }
+      } catch (e) {
+        debugInfo.push(`v2_direct_projects_error`);
       }
     }
 
