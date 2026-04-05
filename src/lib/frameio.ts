@@ -135,11 +135,48 @@ class FrameioClient {
       }
     }
 
-    // Step 4: If still no projects, check if this is a personal account
-    // For personal/free accounts, try getting the root asset directly
+    // Step 4: If no teams, try to get projects via workspace memberships
+    if (allProjects.length === 0 && me.id) {
+      try {
+        // Get user's project memberships directly
+        const memberships = await this.request<
+          Array<{
+            project: FrameioProject;
+          }>
+        >(`/users/${me.id}/memberships`);
+
+        if (Array.isArray(memberships)) {
+          for (const membership of memberships) {
+            if (membership.project) {
+              allProjects.push(membership.project);
+            }
+          }
+          debugInfo.push(`memberships=${memberships.length}`);
+        }
+      } catch (e) {
+        debugInfo.push(`memberships_error`);
+      }
+    }
+
+    // Step 5: If still no projects, try the account's shared projects
     if (allProjects.length === 0 && me.account_id) {
       try {
-        // Get the account details which might contain the root asset
+        // Try to get shared projects
+        const sharedProjects = await this.request<FrameioProject[]>(
+          `/accounts/${me.account_id}/shared_projects`
+        );
+        if (Array.isArray(sharedProjects) && sharedProjects.length > 0) {
+          allProjects.push(...sharedProjects);
+          debugInfo.push(`shared_projects=${sharedProjects.length}`);
+        }
+      } catch (e) {
+        debugInfo.push(`shared_projects_error`);
+      }
+    }
+
+    // Step 6: Last resort - get account details and look for root asset
+    if (allProjects.length === 0 && me.account_id) {
+      try {
         const account = await this.request<{
           id: string;
           name: string;
@@ -149,7 +186,6 @@ class FrameioClient {
         debugInfo.push(`account_name=${account.name}`);
 
         if (account.root_asset_id) {
-          // This account has a root asset, treat it as a single project
           allProjects.push({
             id: me.account_id,
             name: account.name || "My Projects",
