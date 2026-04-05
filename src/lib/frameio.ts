@@ -145,69 +145,7 @@ class FrameioClient {
     const errors: string[] = [];
     const debugInfo: string[] = [];
 
-    // Step 1: Try V4 API first - get accounts
-    try {
-      const v4Accounts = await this.requestV4<V4PaginatedResponse<V4Account>>("/accounts");
-
-      if (v4Accounts.data && Array.isArray(v4Accounts.data) && v4Accounts.data.length > 0) {
-        debugInfo.push(`v4_accounts=${v4Accounts.data.length}`);
-
-        // For each account, get workspaces, then projects
-        for (const account of v4Accounts.data) {
-          this.accountId = account.id;
-          debugInfo.push(`v4_account_${account.id.slice(0, 8)}_name=${account.name}`);
-
-          try {
-            // Get workspaces for this account
-            const workspaces = await this.requestV4<V4PaginatedResponse<V4Workspace>>(
-              `/accounts/${account.id}/workspaces`
-            );
-
-            if (workspaces.data && Array.isArray(workspaces.data)) {
-              debugInfo.push(`v4_workspaces=${workspaces.data.length}`);
-
-              for (const workspace of workspaces.data) {
-                try {
-                  // Get projects for this workspace
-                  const projects = await this.requestV4<V4PaginatedResponse<V4Project>>(
-                    `/accounts/${account.id}/workspaces/${workspace.id}/projects`
-                  );
-
-                  if (projects.data && Array.isArray(projects.data)) {
-                    debugInfo.push(`v4_ws_${workspace.name}_projects=${projects.data.length}`);
-
-                    // Convert V4 project format to our format
-                    for (const project of projects.data) {
-                      allProjects.push({
-                        id: project.id,
-                        name: project.name,
-                        root_asset_id: project.root_folder_id, // V4 uses root_folder_id
-                      });
-                    }
-                  }
-                } catch (e) {
-                  errors.push(`V4 Workspace ${workspace.id}: ${e}`);
-                }
-              }
-            }
-          } catch (e) {
-            errors.push(`V4 Account workspaces ${account.id}: ${e}`);
-          }
-        }
-      }
-    } catch (e) {
-      debugInfo.push(`v4_accounts_error`);
-      // V4 failed, continue to V2 fallback
-    }
-
-    // If V4 worked, return results
-    if (allProjects.length > 0) {
-      return Array.from(new Map(allProjects.map((p) => [p.id, p])).values());
-    }
-
-    // Step 2: Fall back to V2 API
-    debugInfo.push(`falling_back_to_v2`);
-
+    // Step 1: Get user info from V2 /me endpoint (works for all account types)
     let me: {
       id: string;
       account_id?: string;
@@ -226,6 +164,58 @@ class FrameioClient {
     } catch (e) {
       throw new Error(`Failed to authenticate with Frame.io: ${e}. Debug: ${debugInfo.join(", ")}`);
     }
+
+    // Step 2: Try V4 API with the account ID from /me
+    if (me.account_id) {
+      try {
+        // Get workspaces for this account using V4
+        const workspaces = await this.requestV4<V4PaginatedResponse<V4Workspace>>(
+          `/accounts/${me.account_id}/workspaces`
+        );
+
+        if (workspaces.data && Array.isArray(workspaces.data) && workspaces.data.length > 0) {
+          debugInfo.push(`v4_workspaces=${workspaces.data.length}`);
+
+          for (const workspace of workspaces.data) {
+            try {
+              // Get projects for this workspace
+              const projects = await this.requestV4<V4PaginatedResponse<V4Project>>(
+                `/accounts/${me.account_id}/workspaces/${workspace.id}/projects`
+              );
+
+              if (projects.data && Array.isArray(projects.data)) {
+                debugInfo.push(`v4_ws_${workspace.name}_projects=${projects.data.length}`);
+
+                // Convert V4 project format to our format
+                for (const project of projects.data) {
+                  allProjects.push({
+                    id: project.id,
+                    name: project.name,
+                    root_asset_id: project.root_folder_id, // V4 uses root_folder_id
+                  });
+                }
+              }
+            } catch (e) {
+              const errMsg = e instanceof Error ? e.message : String(e);
+              errors.push(`V4 ws ${workspace.id}: ${errMsg.slice(0, 80)}`);
+            }
+          }
+        }
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        debugInfo.push(`v4_workspaces_error`);
+        errors.push(`V4 workspaces: ${errMsg.slice(0, 80)}`);
+      }
+    }
+
+    // If V4 worked, return results
+    if (allProjects.length > 0) {
+      return Array.from(new Map(allProjects.map((p) => [p.id, p])).values());
+    }
+
+    // Step 3: Fall back to V2 API methods
+    debugInfo.push(`falling_back_to_v2`);
+
 
     // Get all accounts the user has access to
     let accounts: Array<{ id: string; name?: string }> = [];
