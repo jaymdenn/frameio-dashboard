@@ -3,7 +3,8 @@
  * Server-side only - never expose API token to client
  */
 
-const FRAMEIO_API_BASE = "https://api.frame.io/v2";
+const FRAMEIO_API_V2 = "https://api.frame.io/v2";
+const FRAMEIO_API_V4 = "https://api.frame.io/v4";
 
 interface FrameioProject {
   id: string;
@@ -36,6 +37,8 @@ interface CreateAssetParams {
 
 class FrameioClient {
   private token: string;
+  private useV4: boolean = false;
+  private accountId: string = "";
 
   constructor(token: string) {
     this.token = token;
@@ -43,16 +46,24 @@ class FrameioClient {
 
   private async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    useV4: boolean = false
   ): Promise<T> {
-    const url = `${FRAMEIO_API_BASE}${endpoint}`;
+    const baseUrl = useV4 ? FRAMEIO_API_V4 : FRAMEIO_API_V2;
+    const url = `${baseUrl}${endpoint}`;
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.token}`,
+      "Content-Type": "application/json",
+      // Required for legacy developer tokens on V4 accounts
+      "x-frameio-legacy-token-auth": "true",
+    };
 
     const response = await fetch(url, {
       ...options,
       headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        ...options.headers,
+        ...headers,
+        ...(options.headers as Record<string, string>),
       },
     });
 
@@ -66,13 +77,14 @@ class FrameioClient {
 
   /**
    * Get all projects for the authenticated account
+   * Supports both V2 and V4 Frame.io API
    */
   async getProjects(): Promise<FrameioProject[]> {
     const allProjects: FrameioProject[] = [];
     const errors: string[] = [];
     const debugInfo: string[] = [];
 
-    // Step 1: Get current user info
+    // Step 1: Get current user info (V2 API)
     let me: {
       id: string;
       account_id?: string;
@@ -86,43 +98,90 @@ class FrameioClient {
         accounts?: { id: string }[];
         _type?: string;
       }>("/me");
-      debugInfo.push(`me.id=${me.id}, me.account_id=${me.account_id}`);
+      debugInfo.push(`me.id=${me.id?.slice(0, 8)}, account_id=${me.account_id?.slice(0, 8)}`);
+      this.accountId = me.account_id || "";
     } catch (e) {
       throw new Error(`Failed to authenticate with Frame.io: ${e}`);
     }
 
-    // Step 2: Try to get workspaces (Frame.io Pro uses workspaces, not teams)
-    let workspaces: { id: string; name: string }[] = [];
-
-    // Try getting workspaces from account
-    try {
-      const accountWorkspaces = await this.request<{ id: string; name: string }[]>(
-        `/accounts/${me.account_id}/workspaces`
-      );
-      if (Array.isArray(accountWorkspaces)) {
-        workspaces = accountWorkspaces;
-        debugInfo.push(`workspaces=${workspaces.length}`);
-      }
-    } catch (e) {
-      debugInfo.push(`workspaces_error`);
-    }
-
-    // Step 3: Get projects from each workspace
-    for (const workspace of workspaces) {
+    // Step 2: Try V4 API first (for V4 accounts)
+    // V4 endpoint: /v4/accounts/{account_id}/workspaces then /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
+    if (me.account_id) {
       try {
-        const workspaceProjects = await this.request<FrameioProject[]>(
-          `/workspaces/${workspace.id}/projects`
+        // Try V4 workspaces endpoint
+        const v4Workspaces = await this.request<Array<{ id: string; name: string }>>(
+          `/accounts/${me.account_id}/workspaces`,
+          {},
+          true // use V4
         );
-        if (Array.isArray(workspaceProjects) && workspaceProjects.length > 0) {
-          debugInfo.push(`workspace_${workspace.name}_projects=${workspaceProjects.length}`);
-          allProjects.push(...workspaceProjects);
+
+        if (Array.isArray(v4Workspaces) && v4Workspaces.length > 0) {
+          debugInfo.push(`v4_workspaces=${v4Workspaces.length}`);
+          this.useV4 = true;
+
+          for (const workspace of v4Workspaces) {
+            try {
+              // V4 projects endpoint
+              const v4Projects = await this.request<Array<{
+                id: string;
+                name: string;
+                root_folder_id?: string;
+              }>>(
+                `/accounts/${me.account_id}/workspaces/${workspace.id}/projects`,
+                {},
+                true // use V4
+              );
+
+              if (Array.isArray(v4Projects)) {
+                debugInfo.push(`v4_ws_${workspace.name}_projects=${v4Projects.length}`);
+                // Map V4 response to our project format
+                for (const proj of v4Projects) {
+                  allProjects.push({
+                    id: proj.id,
+                    name: proj.name,
+                    root_asset_id: proj.root_folder_id || proj.id,
+                  });
+                }
+              }
+            } catch (e) {
+              debugInfo.push(`v4_ws_${workspace.id}_error`);
+            }
+          }
         }
       } catch (e) {
-        errors.push(`Workspace ${workspace.id}: ${e}`);
+        debugInfo.push(`v4_workspaces_error`);
       }
     }
 
-    // Step 3b: Also try teams (for accounts that use team structure)
+    // Step 3: If V4 didn't work, try V2 API workspaces
+    if (allProjects.length === 0 && me.account_id) {
+      try {
+        const accountWorkspaces = await this.request<{ id: string; name: string }[]>(
+          `/accounts/${me.account_id}/workspaces`
+        );
+        if (Array.isArray(accountWorkspaces) && accountWorkspaces.length > 0) {
+          debugInfo.push(`v2_workspaces=${accountWorkspaces.length}`);
+
+          for (const workspace of accountWorkspaces) {
+            try {
+              const workspaceProjects = await this.request<FrameioProject[]>(
+                `/workspaces/${workspace.id}/projects`
+              );
+              if (Array.isArray(workspaceProjects) && workspaceProjects.length > 0) {
+                debugInfo.push(`v2_ws_${workspace.name}_projects=${workspaceProjects.length}`);
+                allProjects.push(...workspaceProjects);
+              }
+            } catch (e) {
+              errors.push(`V2 Workspace ${workspace.id}: ${e}`);
+            }
+          }
+        }
+      } catch (e) {
+        debugInfo.push(`v2_workspaces_error`);
+      }
+    }
+
+    // Step 4: Try V2 teams (older account structure)
     if (allProjects.length === 0) {
       let teams: { id: string; name: string }[] = [];
 
@@ -132,10 +191,10 @@ class FrameioClient {
         );
         if (Array.isArray(userTeams)) {
           teams = userTeams;
-          debugInfo.push(`account_teams=${teams.length}`);
+          debugInfo.push(`v2_account_teams=${teams.length}`);
         }
       } catch (e) {
-        debugInfo.push(`account_teams_error`);
+        debugInfo.push(`v2_account_teams_error`);
       }
 
       if (teams.length === 0) {
@@ -143,10 +202,10 @@ class FrameioClient {
           const directTeams = await this.request<{ id: string; name: string }[]>("/teams");
           if (Array.isArray(directTeams)) {
             teams = directTeams;
-            debugInfo.push(`direct_teams=${teams.length}`);
+            debugInfo.push(`v2_direct_teams=${teams.length}`);
           }
         } catch (e) {
-          debugInfo.push(`direct_teams_error`);
+          debugInfo.push(`v2_direct_teams_error`);
         }
       }
 
@@ -156,19 +215,18 @@ class FrameioClient {
             `/teams/${team.id}/projects`
           );
           if (Array.isArray(teamProjects) && teamProjects.length > 0) {
-            debugInfo.push(`team_${team.id}_projects=${teamProjects.length}`);
+            debugInfo.push(`v2_team_${team.id}_projects=${teamProjects.length}`);
             allProjects.push(...teamProjects);
           }
         } catch (e) {
-          errors.push(`Team ${team.id}: ${e}`);
+          errors.push(`V2 Team ${team.id}: ${e}`);
         }
       }
     }
 
-    // Step 4: If no teams, try to get projects via workspace memberships
+    // Step 5: Try user memberships
     if (allProjects.length === 0 && me.id) {
       try {
-        // Get user's project memberships directly
         const memberships = await this.request<
           Array<{
             project: FrameioProject;
@@ -181,30 +239,14 @@ class FrameioClient {
               allProjects.push(membership.project);
             }
           }
-          debugInfo.push(`memberships=${memberships.length}`);
+          debugInfo.push(`v2_memberships=${memberships.length}`);
         }
       } catch (e) {
-        debugInfo.push(`memberships_error`);
+        debugInfo.push(`v2_memberships_error`);
       }
     }
 
-    // Step 5: If still no projects, try the account's shared projects
-    if (allProjects.length === 0 && me.account_id) {
-      try {
-        // Try to get shared projects
-        const sharedProjects = await this.request<FrameioProject[]>(
-          `/accounts/${me.account_id}/shared_projects`
-        );
-        if (Array.isArray(sharedProjects) && sharedProjects.length > 0) {
-          allProjects.push(...sharedProjects);
-          debugInfo.push(`shared_projects=${sharedProjects.length}`);
-        }
-      } catch (e) {
-        debugInfo.push(`shared_projects_error`);
-      }
-    }
-
-    // Step 6: Last resort - get account details and look for root asset
+    // Step 6: Try account root asset as last resort
     if (allProjects.length === 0 && me.account_id) {
       try {
         const account = await this.request<{
@@ -221,10 +263,10 @@ class FrameioClient {
             name: account.name || "My Projects",
             root_asset_id: account.root_asset_id,
           });
-          debugInfo.push(`using_account_root_asset`);
+          debugInfo.push(`using_account_root`);
         }
       } catch (e) {
-        errors.push(`Account details: ${e}`);
+        errors.push(`Account: ${e}`);
       }
     }
 
@@ -235,7 +277,7 @@ class FrameioClient {
 
     if (uniqueProjects.length === 0) {
       throw new Error(
-        `No projects found. Debug: ${debugInfo.join(", ")}. Errors: ${errors.slice(0, 2).join("; ")}`
+        `No projects found. Debug: ${debugInfo.join(", ")}. First error: ${errors[0] || "none"}`
       );
     }
 
