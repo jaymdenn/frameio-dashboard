@@ -70,97 +70,95 @@ class FrameioClient {
   async getProjects(): Promise<FrameioProject[]> {
     const allProjects: FrameioProject[] = [];
     const errors: string[] = [];
+    const debugInfo: string[] = [];
 
     // Step 1: Get current user info
-    let me: { id: string; account_id?: string; accounts?: { id: string }[] };
+    let me: {
+      id: string;
+      account_id?: string;
+      accounts?: { id: string }[];
+      _type?: string;
+    };
     try {
       me = await this.request<{
         id: string;
         account_id?: string;
         accounts?: { id: string }[];
+        _type?: string;
       }>("/me");
-      console.log("Frame.io /me response:", JSON.stringify(me));
+      debugInfo.push(`me.id=${me.id}, me.account_id=${me.account_id}`);
     } catch (e) {
       throw new Error(`Failed to authenticate with Frame.io: ${e}`);
     }
 
-    // Step 2: Get account ID - try multiple sources
-    let accountIds: string[] = [];
+    // Step 2: Get teams the user is a member of
+    let teams: { id: string; name: string }[] = [];
 
-    if (me.account_id) {
-      accountIds.push(me.account_id);
-    }
-
-    if (me.accounts && Array.isArray(me.accounts)) {
-      accountIds.push(...me.accounts.map(a => a.id));
-    }
-
-    // Try to fetch accounts list
+    // Try getting user's teams directly
     try {
-      const accountsList = await this.request<{ id: string }[]>("/accounts");
-      if (Array.isArray(accountsList)) {
-        accountIds.push(...accountsList.map(a => a.id));
+      const userTeams = await this.request<{ id: string; name: string }[]>(
+        `/accounts/${me.account_id}/teams`
+      );
+      if (Array.isArray(userTeams)) {
+        teams = userTeams;
+        debugInfo.push(`account_teams=${teams.length}`);
       }
     } catch (e) {
-      console.log("Could not fetch /accounts:", e);
+      debugInfo.push(`account_teams_error`);
     }
 
-    // Dedupe account IDs
-    accountIds = [...new Set(accountIds)];
-    console.log("Account IDs to check:", accountIds);
-
-    // Step 3: For each account, try to get projects
-    for (const accountId of accountIds) {
-      // Method A: Get projects directly from account
+    // Fallback: try /teams endpoint
+    if (teams.length === 0) {
       try {
-        const projects = await this.request<FrameioProject[]>(
-          `/accounts/${accountId}/projects`
-        );
-        if (Array.isArray(projects) && projects.length > 0) {
-          console.log(`Found ${projects.length} projects in account ${accountId}`);
-          allProjects.push(...projects);
+        const directTeams = await this.request<{ id: string; name: string }[]>("/teams");
+        if (Array.isArray(directTeams)) {
+          teams = directTeams;
+          debugInfo.push(`direct_teams=${teams.length}`);
         }
       } catch (e) {
-        errors.push(`Account ${accountId} projects: ${e}`);
-      }
-
-      // Method B: Get teams then projects from each team
-      try {
-        const teams = await this.request<{ id: string; name: string }[]>(
-          `/accounts/${accountId}/teams`
-        );
-        console.log(`Found ${teams.length} teams in account ${accountId}`);
-
-        for (const team of teams) {
-          try {
-            const projects = await this.request<FrameioProject[]>(
-              `/teams/${team.id}/projects`
-            );
-            if (Array.isArray(projects) && projects.length > 0) {
-              console.log(`Found ${projects.length} projects in team ${team.name}`);
-              allProjects.push(...projects);
-            }
-          } catch (e) {
-            errors.push(`Team ${team.id}: ${e}`);
-          }
-        }
-      } catch (e) {
-        errors.push(`Account ${accountId} teams: ${e}`);
+        debugInfo.push(`direct_teams_error`);
       }
     }
 
-    // Method C: Try user's direct projects membership
-    if (allProjects.length === 0) {
+    // Step 3: Get projects from each team
+    for (const team of teams) {
       try {
-        const userProjects = await this.request<FrameioProject[]>(
-          `/users/${me.id}/projects`
+        const teamProjects = await this.request<FrameioProject[]>(
+          `/teams/${team.id}/projects`
         );
-        if (Array.isArray(userProjects) && userProjects.length > 0) {
-          console.log(`Found ${userProjects.length} projects for user`);
-          allProjects.push(...userProjects);
+        if (Array.isArray(teamProjects) && teamProjects.length > 0) {
+          debugInfo.push(`team_${team.id}_projects=${teamProjects.length}`);
+          allProjects.push(...teamProjects);
         }
       } catch (e) {
-        errors.push(`User projects: ${e}`);
+        errors.push(`Team ${team.id}: ${e}`);
+      }
+    }
+
+    // Step 4: If still no projects, check if this is a personal account
+    // For personal/free accounts, try getting the root asset directly
+    if (allProjects.length === 0 && me.account_id) {
+      try {
+        // Get the account details which might contain the root asset
+        const account = await this.request<{
+          id: string;
+          name: string;
+          root_asset_id?: string;
+        }>(`/accounts/${me.account_id}`);
+
+        debugInfo.push(`account_name=${account.name}`);
+
+        if (account.root_asset_id) {
+          // This account has a root asset, treat it as a single project
+          allProjects.push({
+            id: me.account_id,
+            name: account.name || "My Projects",
+            root_asset_id: account.root_asset_id,
+          });
+          debugInfo.push(`using_account_root_asset`);
+        }
+      } catch (e) {
+        errors.push(`Account details: ${e}`);
       }
     }
 
@@ -170,9 +168,8 @@ class FrameioClient {
     );
 
     if (uniqueProjects.length === 0) {
-      console.error("All Frame.io API methods failed:", errors);
       throw new Error(
-        `No projects found. Debug info: accountIds=[${accountIds.join(",")}], errors: ${errors.slice(0, 3).join("; ")}`
+        `No projects found. Debug: ${debugInfo.join(", ")}. Errors: ${errors.slice(0, 2).join("; ")}`
       );
     }
 
