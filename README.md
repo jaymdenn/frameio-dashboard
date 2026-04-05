@@ -2,6 +2,13 @@
 
 A web application that allows clients and team members to upload video files directly to Frame.io without needing a Frame.io account. Admins control which folders are visible to uploaders.
 
+## Live URLs
+
+- **Upload Portal**: https://frameio-dashboard.vercel.app
+- **Admin Panel**: https://frameio-dashboard.vercel.app/admin
+- **GitHub**: https://github.com/jaymdenn/frameio-dashboard
+- **Supabase**: https://supabase.com/dashboard/project/vwsvruuoblhsepuubjel
+
 ## Features
 
 - **Public Upload Portal**: Drag-and-drop video upload with real-time progress
