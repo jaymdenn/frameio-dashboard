@@ -406,6 +406,67 @@ class FrameioClient {
       }
     }
 
+    // Try getting account details and using root_asset_id to find projects
+    if (allProjects.length === 0 && me.account_id) {
+      try {
+        const account = await this.requestV2<{
+          id: string;
+          name: string;
+          root_asset_id?: string;
+        }>(`/accounts/${me.account_id}`);
+
+        debugInfo.push(`acct_name=${account.name?.slice(0,15)}`);
+
+        if (account.root_asset_id) {
+          // Get children of the root asset - these might be projects
+          try {
+            const rootChildren = await this.requestV2<Array<{
+              id: string;
+              name: string;
+              type: string;
+              _type?: string;
+              root_asset_id?: string;
+            }>>(`/assets/${account.root_asset_id}/children`);
+
+            if (Array.isArray(rootChildren)) {
+              debugInfo.push(`root_children=${rootChildren.length}`);
+
+              // Look for project-like items
+              for (const child of rootChildren) {
+                if (child._type === 'project' || child.type === 'project' || child.root_asset_id) {
+                  allProjects.push({
+                    id: child.id,
+                    name: child.name,
+                    root_asset_id: child.root_asset_id || child.id,
+                  });
+                }
+              }
+
+              // If no projects found, treat folders as potential upload targets
+              if (allProjects.length === 0) {
+                for (const child of rootChildren) {
+                  if (child.type === 'folder') {
+                    allProjects.push({
+                      id: child.id,
+                      name: child.name,
+                      root_asset_id: child.id,
+                    });
+                  }
+                }
+                if (allProjects.length > 0) {
+                  debugInfo.push(`using_folders_as_projects`);
+                }
+              }
+            }
+          } catch (e) {
+            debugInfo.push(`root_children_err`);
+          }
+        }
+      } catch (e) {
+        debugInfo.push(`acct_details_err`);
+      }
+    }
+
     // Dedupe projects by ID
     const uniqueProjects = Array.from(
       new Map(allProjects.map((p) => [p.id, p])).values()
