@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { RefreshCw, Folder, Check, X, Edit2 } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { RefreshCw, Folder, Check, X, Edit2, Link2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { AdminSidebar } from "@/components/admin/AdminSidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,9 +15,11 @@ import type { FrameioFolder } from "@/types/database";
 export const dynamic = "force-dynamic";
 
 export default function AdminFoldersPage() {
+  const searchParams = useSearchParams();
   const [folders, setFolders] = useState<FrameioFolder[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [syncResult, setSyncResult] = useState<{
     success: boolean;
     message: string;
@@ -26,6 +29,24 @@ export default function AdminFoldersPage() {
   const [editNote, setEditNote] = useState("");
 
   const supabase = createClient();
+
+  // Check for OAuth callback messages
+  useEffect(() => {
+    const connected = searchParams.get("connected");
+    const error = searchParams.get("error");
+
+    if (connected === "true") {
+      setSyncResult({
+        success: true,
+        message: "Frame.io connected successfully! Click 'Sync from Frame.io' to fetch your folders.",
+      });
+    } else if (error) {
+      setSyncResult({
+        success: false,
+        message: `Connection error: ${error}`,
+      });
+    }
+  }, [searchParams]);
 
   const fetchFolders = async () => {
     setLoading(true);
@@ -48,6 +69,7 @@ export default function AdminFoldersPage() {
   const handleSync = async () => {
     setSyncing(true);
     setSyncResult(null);
+    setNeedsAuth(false);
 
     try {
       const response = await fetch("/api/frameio/sync", {
@@ -63,10 +85,19 @@ export default function AdminFoldersPage() {
         });
         fetchFolders();
       } else {
-        setSyncResult({
-          success: false,
-          message: data.error || "Sync failed",
-        });
+        // Check if we need OAuth authentication
+        if (data.needsAuth) {
+          setNeedsAuth(true);
+          setSyncResult({
+            success: false,
+            message: "Please connect your Frame.io account to continue.",
+          });
+        } else {
+          setSyncResult({
+            success: false,
+            message: data.error || "Sync failed",
+          });
+        }
       }
     } catch (error) {
       setSyncResult({
@@ -76,6 +107,10 @@ export default function AdminFoldersPage() {
     } finally {
       setSyncing(false);
     }
+  };
+
+  const handleConnectFrameio = () => {
+    window.location.href = "/api/auth/frameio";
   };
 
   const toggleFolder = async (folder: FrameioFolder) => {
@@ -165,12 +200,20 @@ export default function AdminFoldersPage() {
                 </p>
               )}
             </div>
-            <Button onClick={handleSync} disabled={syncing}>
-              <RefreshCw
-                className={cn("h-4 w-4 mr-2", syncing && "animate-spin")}
-              />
-              {syncing ? "Syncing..." : "Sync from Frame.io"}
-            </Button>
+            <div className="flex gap-2">
+              {needsAuth && (
+                <Button onClick={handleConnectFrameio} variant="outline">
+                  <Link2 className="h-4 w-4 mr-2" />
+                  Connect Frame.io
+                </Button>
+              )}
+              <Button onClick={handleSync} disabled={syncing}>
+                <RefreshCw
+                  className={cn("h-4 w-4 mr-2", syncing && "animate-spin")}
+                />
+                {syncing ? "Syncing..." : "Sync from Frame.io"}
+              </Button>
+            </div>
           </div>
 
           {syncResult && (

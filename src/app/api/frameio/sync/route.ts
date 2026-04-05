@@ -25,8 +25,112 @@ export async function POST() {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    // Try to get OAuth token from settings first
+    const { data: tokenSetting } = await supabase
+      .from("settings")
+      .select("value")
+      .eq("key", "frameio_access_token")
+      .single();
+
+    let frameioToken = tokenSetting?.value || process.env.FRAMEIO_API_TOKEN;
+
+    // Check if OAuth token is expired and refresh if needed
+    if (tokenSetting?.value) {
+      const { data: expirySetting } = await supabase
+        .from("settings")
+        .select("value")
+        .eq("key", "frameio_token_expires_at")
+        .single();
+
+      if (expirySetting?.value) {
+        const expiresAt = new Date(expirySetting.value);
+        const now = new Date();
+
+        // If token expires in less than 5 minutes, refresh it
+        if (expiresAt.getTime() - now.getTime() < 5 * 60 * 1000) {
+          const { data: refreshSetting } = await supabase
+            .from("settings")
+            .select("value")
+            .eq("key", "frameio_refresh_token")
+            .single();
+
+          if (refreshSetting?.value) {
+            try {
+              const refreshResponse = await fetch(
+                "https://ims-na1.adobelogin.com/ims/token/v3",
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                  },
+                  body: new URLSearchParams({
+                    grant_type: "refresh_token",
+                    client_id: process.env.FRAMEIO_OAUTH_CLIENT_ID || "",
+                    client_secret: process.env.FRAMEIO_OAUTH_CLIENT_SECRET || "",
+                    refresh_token: refreshSetting.value,
+                  }),
+                }
+              );
+
+              if (refreshResponse.ok) {
+                const newTokenData = await refreshResponse.json();
+                frameioToken = newTokenData.access_token;
+
+                // Update stored tokens
+                await supabase.from("settings").upsert(
+                  {
+                    key: "frameio_access_token",
+                    value: newTokenData.access_token,
+                    updated_at: new Date().toISOString(),
+                  },
+                  { onConflict: "key" }
+                );
+
+                if (newTokenData.refresh_token) {
+                  await supabase.from("settings").upsert(
+                    {
+                      key: "frameio_refresh_token",
+                      value: newTokenData.refresh_token,
+                      updated_at: new Date().toISOString(),
+                    },
+                    { onConflict: "key" }
+                  );
+                }
+
+                if (newTokenData.expires_in) {
+                  const newExpiresAt = new Date(
+                    Date.now() + newTokenData.expires_in * 1000
+                  ).toISOString();
+                  await supabase.from("settings").upsert(
+                    {
+                      key: "frameio_token_expires_at",
+                      value: newExpiresAt,
+                      updated_at: new Date().toISOString(),
+                    },
+                    { onConflict: "key" }
+                  );
+                }
+              }
+            } catch (refreshError) {
+              console.error("Token refresh failed:", refreshError);
+            }
+          }
+        }
+      }
+    }
+
+    if (!frameioToken) {
+      return NextResponse.json(
+        {
+          error: "Frame.io not connected. Please connect your Frame.io account.",
+          needsAuth: true,
+        },
+        { status: 401 }
+      );
+    }
+
     // Fetch all projects from Frame.io
-    const frameio = createFrameioClient();
+    const frameio = createFrameioClient(frameioToken);
     const projects = await frameio.getProjects();
 
     const allFolders: Array<{
