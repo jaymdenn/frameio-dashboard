@@ -68,21 +68,52 @@ class FrameioClient {
    * Get all projects for the authenticated account
    */
   async getProjects(): Promise<FrameioProject[]> {
-    // First get teams
-    const teams = await this.request<{ id: string }[]>("/teams");
+    // First get the current user's account info
+    const me = await this.request<{ id: string; account_id: string }>("/me");
 
-    if (!teams || teams.length === 0) {
-      throw new Error("No teams found for this Frame.io account");
-    }
+    // Get accounts the user belongs to
+    const accounts = await this.request<{ id: string; name: string }[]>(`/accounts`);
 
-    // Get projects from all teams
     const allProjects: FrameioProject[] = [];
 
-    for (const team of teams) {
-      const projects = await this.request<FrameioProject[]>(
-        `/teams/${team.id}/projects`
-      );
-      allProjects.push(...projects);
+    // Try to get projects from each account
+    for (const account of accounts) {
+      try {
+        // Get teams for this account
+        const teams = await this.request<{ id: string }[]>(`/accounts/${account.id}/teams`);
+
+        for (const team of teams) {
+          try {
+            const projects = await this.request<FrameioProject[]>(
+              `/teams/${team.id}/projects`
+            );
+            allProjects.push(...projects);
+          } catch (e) {
+            console.log(`Could not fetch projects for team ${team.id}:`, e);
+          }
+        }
+      } catch (e) {
+        console.log(`Could not fetch teams for account ${account.id}:`, e);
+      }
+    }
+
+    // Fallback: try legacy /teams endpoint if no projects found
+    if (allProjects.length === 0) {
+      try {
+        const teams = await this.request<{ id: string }[]>("/teams");
+        for (const team of teams) {
+          const projects = await this.request<FrameioProject[]>(
+            `/teams/${team.id}/projects`
+          );
+          allProjects.push(...projects);
+        }
+      } catch (e) {
+        console.log("Legacy teams endpoint also failed:", e);
+      }
+    }
+
+    if (allProjects.length === 0) {
+      throw new Error("No projects found. Please ensure your Frame.io API token has access to at least one project.");
     }
 
     return allProjects;
