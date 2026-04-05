@@ -90,7 +90,8 @@ class FrameioClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Frame.io V2 API error: ${response.status} - ${error}`);
+      // Include endpoint in error for debugging
+      throw new Error(`V2 ${endpoint}: ${response.status} - ${error.slice(0, 200)}`);
     }
 
     return response.json();
@@ -285,11 +286,13 @@ class FrameioClient {
                 allProjects.push(...workspaceProjects);
               }
             } catch (e) {
-              errors.push(`V2 Workspace ${workspace.id}: ${e}`);
+              errors.push(`${e}`);
             }
           }
         }
       } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        errors.push(errMsg.slice(0, 100));
         debugInfo.push(`v2_workspaces_error`);
       }
     }
@@ -303,6 +306,10 @@ class FrameioClient {
           allProjects.push(...sharedProjects);
         }
       } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        if (errMsg.includes("403") || errMsg.includes("scope")) {
+          errors.push(`shared_projects: ${errMsg}`);
+        }
         debugInfo.push(`v2_shared_projects_error`);
       }
     }
