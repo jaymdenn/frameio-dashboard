@@ -1,6 +1,8 @@
 /**
- * Frame.io V2 API Client
+ * Frame.io API Client - Supports both V2 and V4 APIs
+ * V4 API is required for accounts managed via Adobe Admin Console
  * Server-side only - never expose API token to client
+ * @see https://next.developer.frame.io/platform/docs/overview
  */
 
 const FRAMEIO_API_V2 = "https://api.frame.io/v2";
@@ -35,28 +37,47 @@ interface CreateAssetParams {
   filetype?: string;
 }
 
+// V4 API response types
+interface V4Account {
+  id: string;
+  name: string;
+}
+
+interface V4Workspace {
+  id: string;
+  name: string;
+}
+
+interface V4Project {
+  id: string;
+  name: string;
+  root_folder_id: string; // V4 uses root_folder_id instead of root_asset_id
+}
+
+interface V4PaginatedResponse<T> {
+  data: T[];
+  pagination?: {
+    next_cursor?: string;
+  };
+}
+
 class FrameioClient {
   private token: string;
-  private useV4: boolean = false;
   private accountId: string = "";
 
   constructor(token: string) {
     this.token = token;
   }
 
-  private async request<T>(
+  private async requestV2<T>(
     endpoint: string,
-    options: RequestInit = {},
-    useV4: boolean = false
+    options: RequestInit = {}
   ): Promise<T> {
-    const baseUrl = useV4 ? FRAMEIO_API_V4 : FRAMEIO_API_V2;
-    const url = `${baseUrl}${endpoint}`;
+    const url = `${FRAMEIO_API_V2}${endpoint}`;
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       "Content-Type": "application/json",
-      // Required for legacy developer tokens on V4 accounts
-      "x-frameio-legacy-token-auth": "true",
     };
 
     const response = await fetch(url, {
@@ -69,22 +90,123 @@ class FrameioClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Frame.io API error: ${response.status} - ${error}`);
+      throw new Error(`Frame.io V2 API error: ${response.status} - ${error}`);
     }
 
     return response.json();
   }
 
+  private async requestV4<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const url = `${FRAMEIO_API_V4}${endpoint}`;
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.token}`,
+      "Content-Type": "application/json",
+    };
+
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        ...headers,
+        ...(options.headers as Record<string, string>),
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Frame.io V4 API error: ${response.status} - ${error}`);
+    }
+
+    return response.json();
+  }
+
+  // Keep old request method for backwards compatibility
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    useV4: boolean = false
+  ): Promise<T> {
+    return useV4
+      ? this.requestV4<T>(endpoint, options)
+      : this.requestV2<T>(endpoint, options);
+  }
+
   /**
    * Get all projects for the authenticated account
-   * Supports both V2 and V4 Frame.io API
+   * Uses V4 API first (for Adobe-managed accounts), falls back to V2
+   * @see https://next.developer.frame.io/platform/docs/guides/accounts-projects-and-workspaces
    */
   async getProjects(): Promise<FrameioProject[]> {
     const allProjects: FrameioProject[] = [];
     const errors: string[] = [];
     const debugInfo: string[] = [];
 
-    // Step 1: Get current user info (V2 API)
+    // Step 1: Try V4 API first - get accounts
+    try {
+      const v4Accounts = await this.requestV4<V4PaginatedResponse<V4Account>>("/accounts");
+
+      if (v4Accounts.data && Array.isArray(v4Accounts.data) && v4Accounts.data.length > 0) {
+        debugInfo.push(`v4_accounts=${v4Accounts.data.length}`);
+
+        // For each account, get workspaces, then projects
+        for (const account of v4Accounts.data) {
+          this.accountId = account.id;
+          debugInfo.push(`v4_account_${account.id.slice(0, 8)}_name=${account.name}`);
+
+          try {
+            // Get workspaces for this account
+            const workspaces = await this.requestV4<V4PaginatedResponse<V4Workspace>>(
+              `/accounts/${account.id}/workspaces`
+            );
+
+            if (workspaces.data && Array.isArray(workspaces.data)) {
+              debugInfo.push(`v4_workspaces=${workspaces.data.length}`);
+
+              for (const workspace of workspaces.data) {
+                try {
+                  // Get projects for this workspace
+                  const projects = await this.requestV4<V4PaginatedResponse<V4Project>>(
+                    `/accounts/${account.id}/workspaces/${workspace.id}/projects`
+                  );
+
+                  if (projects.data && Array.isArray(projects.data)) {
+                    debugInfo.push(`v4_ws_${workspace.name}_projects=${projects.data.length}`);
+
+                    // Convert V4 project format to our format
+                    for (const project of projects.data) {
+                      allProjects.push({
+                        id: project.id,
+                        name: project.name,
+                        root_asset_id: project.root_folder_id, // V4 uses root_folder_id
+                      });
+                    }
+                  }
+                } catch (e) {
+                  errors.push(`V4 Workspace ${workspace.id}: ${e}`);
+                }
+              }
+            }
+          } catch (e) {
+            errors.push(`V4 Account workspaces ${account.id}: ${e}`);
+          }
+        }
+      }
+    } catch (e) {
+      debugInfo.push(`v4_accounts_error`);
+      // V4 failed, continue to V2 fallback
+    }
+
+    // If V4 worked, return results
+    if (allProjects.length > 0) {
+      return Array.from(new Map(allProjects.map((p) => [p.id, p])).values());
+    }
+
+    // Step 2: Fall back to V2 API
+    debugInfo.push(`falling_back_to_v2`);
+
     let me: {
       id: string;
       account_id?: string;
@@ -92,7 +214,7 @@ class FrameioClient {
       _type?: string;
     };
     try {
-      me = await this.request<{
+      me = await this.requestV2<{
         id: string;
         account_id?: string;
         accounts?: { id: string }[];
@@ -101,11 +223,10 @@ class FrameioClient {
       debugInfo.push(`me.id=${me.id?.slice(0, 8)}, account_id=${me.account_id?.slice(0, 8)}`);
       this.accountId = me.account_id || "";
     } catch (e) {
-      throw new Error(`Failed to authenticate with Frame.io: ${e}`);
+      throw new Error(`Failed to authenticate with Frame.io: ${e}. Debug: ${debugInfo.join(", ")}`);
     }
 
-    // Step 2: Get all accounts the user has access to and find projects
-    // The /me endpoint may return accounts array with projects
+    // Get all accounts the user has access to
     let accounts: Array<{ id: string; name?: string }> = [];
 
     if (me.account_id) {
@@ -117,7 +238,7 @@ class FrameioClient {
 
     // Try to get accounts list
     try {
-      const accountsList = await this.request<Array<{ id: string; name: string }>>("/accounts");
+      const accountsList = await this.requestV2<Array<{ id: string; name: string }>>("/accounts");
       if (Array.isArray(accountsList)) {
         accounts.push(...accountsList);
         debugInfo.push(`accounts_list=${accountsList.length}`);
@@ -132,9 +253,8 @@ class FrameioClient {
 
     // For each account, try to get projects directly
     for (const account of accounts) {
-      // Try getting projects directly from account (some API versions support this)
       try {
-        const accountProjects = await this.request<FrameioProject[]>(
+        const accountProjects = await this.requestV2<FrameioProject[]>(
           `/accounts/${account.id}/projects`
         );
         if (Array.isArray(accountProjects) && accountProjects.length > 0) {
@@ -142,14 +262,14 @@ class FrameioClient {
           allProjects.push(...accountProjects);
         }
       } catch (e) {
-        // This is expected to fail, continue to other methods
+        // Expected to fail, continue
       }
     }
 
-    // Step 3: If V4 didn't work, try V2 API workspaces
+    // Try V2 API workspaces
     if (allProjects.length === 0 && me.account_id) {
       try {
-        const accountWorkspaces = await this.request<{ id: string; name: string }[]>(
+        const accountWorkspaces = await this.requestV2<{ id: string; name: string }[]>(
           `/accounts/${me.account_id}/workspaces`
         );
         if (Array.isArray(accountWorkspaces) && accountWorkspaces.length > 0) {
@@ -157,7 +277,7 @@ class FrameioClient {
 
           for (const workspace of accountWorkspaces) {
             try {
-              const workspaceProjects = await this.request<FrameioProject[]>(
+              const workspaceProjects = await this.requestV2<FrameioProject[]>(
                 `/workspaces/${workspace.id}/projects`
               );
               if (Array.isArray(workspaceProjects) && workspaceProjects.length > 0) {
@@ -174,12 +294,12 @@ class FrameioClient {
       }
     }
 
-    // Step 4: Try V2 teams (older account structure)
+    // Try V2 teams (older account structure)
     if (allProjects.length === 0) {
       let teams: { id: string; name: string }[] = [];
 
       try {
-        const userTeams = await this.request<{ id: string; name: string }[]>(
+        const userTeams = await this.requestV2<{ id: string; name: string }[]>(
           `/accounts/${me.account_id}/teams`
         );
         if (Array.isArray(userTeams)) {
@@ -192,7 +312,7 @@ class FrameioClient {
 
       if (teams.length === 0) {
         try {
-          const directTeams = await this.request<{ id: string; name: string }[]>("/teams");
+          const directTeams = await this.requestV2<{ id: string; name: string }[]>("/teams");
           if (Array.isArray(directTeams)) {
             teams = directTeams;
             debugInfo.push(`v2_direct_teams=${teams.length}`);
@@ -204,7 +324,7 @@ class FrameioClient {
 
       for (const team of teams) {
         try {
-          const teamProjects = await this.request<FrameioProject[]>(
+          const teamProjects = await this.requestV2<FrameioProject[]>(
             `/teams/${team.id}/projects`
           );
           if (Array.isArray(teamProjects) && teamProjects.length > 0) {
@@ -214,94 +334,6 @@ class FrameioClient {
         } catch (e) {
           errors.push(`V2 Team ${team.id}: ${e}`);
         }
-      }
-    }
-
-    // Step 5: Try user's projects directly
-    if (allProjects.length === 0 && me.id) {
-      // Try /me endpoint with include parameter
-      try {
-        const meWithProjects = await this.request<{
-          projects?: FrameioProject[];
-          shared_projects?: FrameioProject[];
-        }>("/me?include=projects,shared_projects");
-
-        if (meWithProjects.projects && Array.isArray(meWithProjects.projects)) {
-          allProjects.push(...meWithProjects.projects);
-          debugInfo.push(`me_projects=${meWithProjects.projects.length}`);
-        }
-        if (meWithProjects.shared_projects && Array.isArray(meWithProjects.shared_projects)) {
-          allProjects.push(...meWithProjects.shared_projects);
-          debugInfo.push(`me_shared=${meWithProjects.shared_projects.length}`);
-        }
-      } catch (e) {
-        debugInfo.push(`me_include_error`);
-      }
-    }
-
-    // Step 5b: Try user memberships
-    if (allProjects.length === 0 && me.id) {
-      try {
-        const memberships = await this.request<
-          Array<{
-            project?: FrameioProject;
-            resource?: FrameioProject;
-          }>
-        >(`/users/${me.id}/memberships`);
-
-        if (Array.isArray(memberships)) {
-          for (const membership of memberships) {
-            if (membership.project) {
-              allProjects.push(membership.project);
-            } else if (membership.resource) {
-              allProjects.push(membership.resource);
-            }
-          }
-          debugInfo.push(`v2_memberships=${memberships.length}`);
-        }
-      } catch (e) {
-        debugInfo.push(`v2_memberships_error`);
-      }
-    }
-
-    // Step 5c: Try pending_collaborator_list (another way to find projects)
-    if (allProjects.length === 0) {
-      try {
-        const collabs = await this.request<Array<{ project: FrameioProject }>>(
-          "/me/pending_collaborator_list"
-        );
-        if (Array.isArray(collabs)) {
-          for (const c of collabs) {
-            if (c.project) allProjects.push(c.project);
-          }
-          debugInfo.push(`collabs=${collabs.length}`);
-        }
-      } catch (e) {
-        // Expected to fail
-      }
-    }
-
-    // Step 6: Try account root asset as last resort
-    if (allProjects.length === 0 && me.account_id) {
-      try {
-        const account = await this.request<{
-          id: string;
-          name: string;
-          root_asset_id?: string;
-        }>(`/accounts/${me.account_id}`);
-
-        debugInfo.push(`account_name=${account.name}`);
-
-        if (account.root_asset_id) {
-          allProjects.push({
-            id: me.account_id,
-            name: account.name || "My Projects",
-            root_asset_id: account.root_asset_id,
-          });
-          debugInfo.push(`using_account_root`);
-        }
-      } catch (e) {
-        errors.push(`Account: ${e}`);
       }
     }
 
@@ -320,10 +352,37 @@ class FrameioClient {
   }
 
   /**
-   * Get all child assets (folders/files) of a parent asset
+   * Get all child assets (folders/files) of a parent folder
+   * Tries V4 API first, falls back to V2
    */
-  async getChildren(assetId: string): Promise<FrameioAsset[]> {
-    return this.request<FrameioAsset[]>(`/assets/${assetId}/children`);
+  async getChildren(folderId: string, accountId?: string): Promise<FrameioAsset[]> {
+    const acctId = accountId || this.accountId;
+
+    // Try V4 first if we have an account ID
+    if (acctId) {
+      try {
+        const v4Response = await this.requestV4<V4PaginatedResponse<{
+          id: string;
+          name: string;
+          type: "folder" | "file" | "version_stack";
+        }>>(`/accounts/${acctId}/folders/${folderId}/children`);
+
+        if (v4Response.data && Array.isArray(v4Response.data)) {
+          return v4Response.data.map(item => ({
+            id: item.id,
+            name: item.name,
+            type: item.type,
+            parent_id: folderId,
+            project_id: "",
+          }));
+        }
+      } catch (e) {
+        // V4 failed, fall back to V2
+      }
+    }
+
+    // Fall back to V2
+    return this.requestV2<FrameioAsset[]>(`/assets/${folderId}/children`);
   }
 
   /**
@@ -333,7 +392,8 @@ class FrameioClient {
     rootAssetId: string,
     projectName: string,
     projectId: string,
-    parentPath: string = ""
+    parentPath: string = "",
+    accountId?: string
   ): Promise<
     Array<{
       asset_id: string;
@@ -343,7 +403,8 @@ class FrameioClient {
       path_breadcrumb: string;
     }>
   > {
-    const children = await this.getChildren(rootAssetId);
+    const acctId = accountId || this.accountId;
+    const children = await this.getChildren(rootAssetId, acctId);
     const folders: Array<{
       asset_id: string;
       project_id: string;
@@ -371,7 +432,8 @@ class FrameioClient {
           child.id,
           projectName,
           projectId,
-          currentPath
+          currentPath,
+          acctId
         );
         folders.push(...subfolders);
       }
