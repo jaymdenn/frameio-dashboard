@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { RefreshCw, Folder, Check, X, Edit2, Link2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -14,7 +14,7 @@ import type { FrameioFolder } from "@/types/database";
 
 export const dynamic = "force-dynamic";
 
-export default function AdminFoldersPage() {
+function AdminFoldersContent() {
   const searchParams = useSearchParams();
   const [folders, setFolders] = useState<FrameioFolder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -348,5 +348,28 @@ export default function AdminFoldersPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+function FoldersLoading() {
+  return (
+    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
+      <AdminSidebar />
+      <main className="pl-64">
+        <div className="p-8">
+          <div className="flex items-center justify-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600" />
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+export default function AdminFoldersPage() {
+  return (
+    <Suspense fallback={<FoldersLoading />}>
+      <AdminFoldersContent />
+    </Suspense>
   );
 }
